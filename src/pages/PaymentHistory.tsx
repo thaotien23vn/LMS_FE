@@ -148,9 +148,6 @@ export default function PaymentHistory() {
     }
   };
 
-  const totalSpent = payments
-    .filter(p => p.status === 'completed')
-    .reduce((sum, p) => sum + Number(p.amount || 0), 0);
   const completedCount = payments.filter(p => p.status === 'completed').length;
   const pendingCount = payments.filter(p => p.status === 'pending').length;
 

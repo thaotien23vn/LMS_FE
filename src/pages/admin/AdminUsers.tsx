@@ -12,8 +12,6 @@ interface AdminUsersProps {
   icon?: React.ReactNode;
   onRowClick?: (user: BackendAdminUser) => void;
   showViewButton?: boolean;
-  /** Show promote/demote buttons for role management */
-  enableRoleActions?: boolean;
 }
 
 const AdminUsers: React.FC<AdminUsersProps> = ({
@@ -24,7 +22,6 @@ const AdminUsers: React.FC<AdminUsersProps> = ({
   icon = null,
   onRowClick,
   showViewButton = false,
-  enableRoleActions = false,
 }) => {
   const [users, setUsers] = useState<BackendAdminUser[]>([]);
   const [loading, setLoading] = useState(true);

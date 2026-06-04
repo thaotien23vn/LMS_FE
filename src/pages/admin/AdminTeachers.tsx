@@ -257,7 +257,6 @@ const AdminTeachers: React.FC = () => {
         icon={<Users size={36} />}
         onRowClick={handleTeacherClick}
         showViewButton={true}
-        enableRoleActions={false}
       />
 
       {/* KPI Modal */}

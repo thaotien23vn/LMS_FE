@@ -10,7 +10,6 @@ const AdminStudents: React.FC = () => {
       pageTitle="Quản lý học viên"
       pageSubtitle="Quản lý tài khoản học viên"
       icon={<GraduationCap size={36} />}
-      enableRoleActions={false}
     />
   );
 };
