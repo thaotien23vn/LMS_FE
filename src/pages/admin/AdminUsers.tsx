@@ -191,16 +191,6 @@ const AdminUsers: React.FC<AdminUsersProps> = ({
     }
   };
 
-  const onChangeRole = async (u: BackendAdminUser, role: 'student' | 'teacher') => {
-    try {
-      await adminService.updateUser(String(u.id), { role });
-      toast.success('Cập nhật role thành công');
-      setUsers((prev) => prev.map((x) => (String(x.id) === String(u.id) ? { ...x, role } : x)));
-    } catch (e: any) {
-      toast.error(e?.message || 'Cập nhật role thất bại');
-    }
-  };
-
   const onResetPassword = (u: BackendAdminUser) => {
     setResetUser(u);
     setNewPassword('');
