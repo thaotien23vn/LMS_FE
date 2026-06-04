@@ -1,0 +1,435 @@
+import { apiRequest } from "./api";
+
+export type BackendCourseListItem = {
+  id: string | number;
+  title: string;
+  slug?: string;
+  description?: string;
+  imageUrl?: string | null;
+  level?: string | null;
+  rating?: number | string | null;
+  reviewCount?: number | null;
+  duration?: string | null;
+  price?: number;
+  published?: boolean;
+  createdAt?: string;
+  creator?: { id: string | number; name: string; username?: string };
+  enrollmentCount?: number;
+  students?: number;
+  enrollments?: number;
+};
+
+export type BackendFormattedCourse = Partial<FrontendCourse> & {
+  id: string | number;
+  title: string;
+  creatorId?: string | number;
+};
+
+export type BackendLecture = {
+  id: string | number;
+  title: string;
+  type: string;
+  contentUrl?: string;
+  duration?: number;
+  order?: number;
+  isPreview?: boolean;
+  attachments?: any;
+  content?: string;
+};
+
+export type BackendChapter = {
+  id: string | number;
+  title: string;
+  order?: number;
+  Lectures?: BackendLecture[];
+};
+
+export type BackendCourseDetail = BackendCourseListItem & {
+  creator?: { id: string | number; name: string; username?: string };
+  Chapters?: BackendChapter[];
+};
+
+function secondsToDuration(sec?: number) {
+  if (!sec || sec <= 0) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function normalizeIsPreview(value: unknown): boolean {
+  if (value === true) return true;
+  if (value === false) return false;
+  if (value === 1) return true;
+  if (value === 0) return false;
+  const s = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!s) return false;
+  if (s === "1" || s === "true" || s === "yes") return true;
+  if (s === "0" || s === "false" || s === "no") return false;
+  return false;
+}
+
+export type FrontendCourse = {
+  id: string;
+  creatorId?: string;
+  title: string;
+  teacher: string;
+  teacherAvatar?: string;
+  image: string;
+  category: string;
+  rating: number;
+  reviewCount: number;
+  students: number;
+  level: "Cơ bản" | "Trung cấp" | "Nâng cao" | "Mọi cấp độ";
+  totalLessons: number;
+  duration: string;
+  description: string;
+  willLearn: string[];
+  requirements: string[];
+  curriculum: {
+    id: string;
+    title: string;
+    lessons: {
+      id: string;
+      title: string;
+      duration: string;
+      isPreview: boolean;
+      videoUrl?: string;
+      type?: string;
+      content?: string;
+      attachments?: any[];
+    }[];
+  }[];
+  tags: string[];
+  price: number;
+  lastUpdated: string;
+  // Duration settings for expiration system
+  durationType?: 'lifetime' | 'fixed' | 'subscription';
+  durationValue?: number;
+  durationUnit?: 'days' | 'months' | 'years';
+  renewalDiscountPercent?: number;
+  gracePeriodDays?: number;
+};
+
+export function mapBackendCourseToFrontend(
+  course: BackendCourseDetail,
+): FrontendCourse {
+  const chapters = course.Chapters || [];
+  const curriculum = chapters
+    .slice()
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .map((ch, idx) => ({
+      id: String(ch.id ?? idx),
+      title: ch.title,
+      lessons: (ch.Lectures || [])
+        .slice()
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .map((lec, lecIdx) => ({
+          id: String(lec.id ?? lecIdx),
+          title: lec.title,
+          duration: secondsToDuration(lec.duration),
+          isPreview: normalizeIsPreview((lec as any)?.isPreview),
+          videoUrl: lec.contentUrl,
+          type: lec.type,
+          content: (lec as any).content,
+          attachments: lec.attachments,
+        })),
+    }));
+
+  const totalLessons = curriculum.reduce((sum, m) => sum + m.lessons.length, 0);
+
+  return {
+    id: String(course.id),
+    creatorId: course.creator?.id != null ? String(course.creator.id) : undefined,
+    title: course.title,
+    teacher: course.creator?.name || "",
+    teacherAvatar:
+      (course.creator as any)?.avatarUrl ||
+      (course.creator as any)?.avatar ||
+      (course.creator as any)?.imageUrl ||
+      undefined,
+    image: course.imageUrl || "/elearning-1.jpg",
+    category: "Tất cả",
+    rating: Number(course.rating ?? 0),
+    reviewCount: Number(course.reviewCount ?? 0),
+    students: course.enrollmentCount || course.students || course.enrollments || 0,
+    level: "Mọi cấp độ",
+    totalLessons,
+    duration: "",
+    description: course.description || "",
+    willLearn: [],
+    requirements: [],
+    curriculum,
+    tags: [],
+    price: course.price || 0,
+    lastUpdated: course.createdAt || "",
+    // Duration settings
+    durationType: (course as any).durationType,
+    durationValue: (course as any).durationValue,
+    durationUnit: (course as any).durationUnit,
+    renewalDiscountPercent: (course as any).renewalDiscountPercent,
+    gracePeriodDays: (course as any).gracePeriodDays,
+  };
+}
+
+export const courseService = {
+  async listCourses(q?: string): Promise<FrontendCourse[]> {
+    const query = q ? `?q=${encodeURIComponent(q)}` : "";
+    const data = await apiRequest<{
+      courses: (BackendFormattedCourse | BackendCourseListItem)[];
+    }>(`courses${query}`, {
+      method: "GET",
+      auth: false,
+    });
+
+    return (data.courses || []).map((c) => {
+      // Your backend already formats published courses to FE shape.
+      // Keep fallback mapping for legacy payloads.
+      const maybe = c as BackendFormattedCourse;
+      if (
+        typeof maybe.category === "string" &&
+        typeof maybe.teacher === "string" &&
+        typeof maybe.image === "string"
+      ) {
+        return {
+          id: String(maybe.id),
+          creatorId: maybe.creatorId != null ? String(maybe.creatorId) : undefined,
+          title: String(maybe.title),
+          teacher: maybe.teacher || "",
+          teacherAvatar: maybe.teacherAvatar,
+          image: maybe.image || "/elearning-1.jpg",
+          category: maybe.category || "Khác",
+          rating: Number(maybe.rating ?? 0),
+          reviewCount: Number(maybe.reviewCount ?? 0),
+          students: Number(maybe.students ?? 0),
+          level: (maybe.level as FrontendCourse["level"]) || "Mọi cấp độ",
+          totalLessons: Number(maybe.totalLessons ?? 0),
+          duration: String(maybe.duration ?? ""),
+          description: String(maybe.description ?? ""),
+          willLearn: Array.isArray(maybe.willLearn) ? maybe.willLearn : [],
+          requirements: Array.isArray(maybe.requirements)
+            ? maybe.requirements
+            : [],
+          curriculum: Array.isArray(maybe.curriculum)
+            ? maybe.curriculum.map((m: any) => ({
+                ...m,
+                lessons: Array.isArray(m?.lessons)
+                  ? m.lessons.map((l: any) => ({
+                      ...l,
+                      isPreview: normalizeIsPreview(l?.isPreview),
+                    }))
+                  : [],
+              }))
+            : [],
+          tags: Array.isArray(maybe.tags) ? maybe.tags : [],
+          price: Number(maybe.price ?? 0),
+          lastUpdated: String(maybe.lastUpdated ?? ""),
+        };
+      }
+
+      return mapBackendCourseToFrontend({
+        ...(c as BackendCourseListItem),
+        Chapters: [],
+      });
+    });
+  },
+
+  async getCourseDetail(id: string): Promise<FrontendCourse> {
+    const data = await apiRequest<{
+      course: BackendFormattedCourse | BackendCourseDetail;
+    }>(`courses/${id}`, {
+      method: "GET",
+      auth: false,
+    });
+
+    const maybe = data.course as BackendFormattedCourse;
+    if (
+      typeof maybe.category === "string" &&
+      typeof maybe.teacher === "string" &&
+      Array.isArray(maybe.curriculum)
+    ) {
+      return {
+        id: String(maybe.id),
+        creatorId: maybe.creatorId != null ? String(maybe.creatorId) : undefined,
+        title: String(maybe.title),
+        teacher: maybe.teacher || "",
+        teacherAvatar: maybe.teacherAvatar,
+        image: maybe.image || "/elearning-1.jpg",
+        category: maybe.category || "Khác",
+        rating: Number(maybe.rating ?? 0),
+        reviewCount: Number(maybe.reviewCount ?? 0),
+        students: Number(maybe.students ?? 0),
+        level: (maybe.level as FrontendCourse["level"]) || "Mọi cấp độ",
+        totalLessons: Number(maybe.totalLessons ?? 0),
+        duration: String(maybe.duration ?? ""),
+        description: String(maybe.description ?? ""),
+        willLearn: Array.isArray(maybe.willLearn) ? maybe.willLearn : [],
+        requirements: Array.isArray(maybe.requirements)
+          ? maybe.requirements
+          : [],
+        curriculum: Array.isArray(maybe.curriculum)
+          ? maybe.curriculum.map((m: any) => ({
+              ...m,
+              lessons: Array.isArray(m?.lessons)
+                ? m.lessons.map((l: any) => ({
+                    ...l,
+                    isPreview: Boolean(l?.isPreview),
+                  }))
+                : [],
+            }))
+          : [],
+        tags: Array.isArray(maybe.tags) ? maybe.tags : [],
+        price: Number(maybe.price ?? 0),
+        lastUpdated: String(maybe.lastUpdated ?? ""),
+        // Duration settings
+        durationType: (maybe as any).durationType,
+        durationValue: (maybe as any).durationValue,
+        durationUnit: (maybe as any).durationUnit,
+        renewalDiscountPercent: (maybe as any).renewalDiscountPercent,
+        gracePeriodDays: (maybe as any).gracePeriodDays,
+      };
+    }
+
+    // Fallback to legacy transform
+    const raw = data.course as BackendCourseDetail;
+    const curriculum = (raw.Chapters || []).map((ch: any) => ({
+      id: String(ch.id || ""),
+      title: String(ch.title || ""),
+      lessons: (ch.lectures || []).map((l: any) => ({
+        id: String(l.id || ""),
+        title: String(l.title || ""),
+        duration: l.duration ? `${Math.ceil(l.duration / 60)} phút` : "0 phút",
+        isPreview: Boolean(l.isPreview),
+        videoUrl: l.isPreview ? l.contentUrl || l.videoUrl : null,
+        type: String(l.type || "video"),
+      })),
+    }));
+
+    const totalLessons = curriculum.reduce(
+      (sum: number, m: any) => sum + (m.lessons?.length || 0),
+      0
+    );
+
+    return {
+      id: String(raw.id),
+      title: String(raw.title || ""),
+      teacher: String(raw.creator?.name || ""),
+      teacherAvatar: `https://i.pravatar.cc/150?u=${raw.creator?.username || "teacher"}`,
+      image: raw.imageUrl || "/elearning-1.jpg",
+      category: String((raw as any).Category?.name || "Khác"),
+      rating: Number(raw.rating ?? 0),
+      reviewCount: Number(raw.reviewCount ?? 0),
+      students: Number(raw.students ?? 0),
+      level: (raw.level as FrontendCourse["level"]) || "Mọi cấp độ",
+      totalLessons,
+      duration: raw.duration ? String(raw.duration) : "",
+      description: String(raw.description || ""),
+      willLearn: Array.isArray((raw as any).willLearn) ? (raw as any).willLearn : [],
+      requirements: Array.isArray((raw as any).requirements) ? (raw as any).requirements : [],
+      curriculum,
+      tags: Array.isArray((raw as any).tags) ? (raw as any).tags : [],
+      price: Number(raw.price ?? 0),
+      lastUpdated: String((raw as any).updatedAt ?? ""),
+      // Duration settings
+      durationType: (raw as any).durationType,
+      durationValue: (raw as any).durationValue,
+      durationUnit: (raw as any).durationUnit,
+      renewalDiscountPercent: (raw as any).renewalDiscountPercent,
+      gracePeriodDays: (raw as any).gracePeriodDays,
+    };
+  },
+
+  // Get enrolled course content with full video URLs (for enrolled students only)
+  async getEnrolledCourseContent(courseId: string): Promise<{
+    course: any;
+    chapters: any[];
+    enrollment: any;
+  }> {
+    const data = await apiRequest<{
+      success: boolean;
+      data: {
+        course: any;
+        chapters: any[];
+        enrollment: any;
+      };
+    }>(`student/enrolled-courses/${courseId}/content`, {
+      method: "GET",
+      auth: true,
+    });
+    // Check if response has nested data or direct data
+    const result = data.data || data;
+    return result;
+  },
+
+  // Legacy getCourseDetail for backward compatibility
+  async getCourseDetailLegacy(id: string): Promise<FrontendCourse> {
+    const data = await apiRequest<{
+      course: BackendFormattedCourse | BackendCourseDetail;
+    }>(`courses/${id}`, {
+      method: "GET",
+      auth: false,
+    });
+
+    const maybe = data.course as BackendFormattedCourse;
+    if (
+      typeof maybe.category === "string" &&
+      typeof maybe.teacher === "string" &&
+      Array.isArray(maybe.curriculum)
+    ) {
+      return {
+        id: String(maybe.id),
+        creatorId: maybe.creatorId != null ? String(maybe.creatorId) : undefined,
+        title: String(maybe.title),
+        teacher: maybe.teacher || "",
+        teacherAvatar: maybe.teacherAvatar,
+        image: maybe.image || "/elearning-1.jpg",
+        category: maybe.category || "Khác",
+        rating: Number(maybe.rating ?? 0),
+        reviewCount: Number(maybe.reviewCount ?? 0),
+        students: Number(maybe.students ?? 0),
+        level: (maybe.level as FrontendCourse["level"]) || "Mọi cấp độ",
+        totalLessons: Number(maybe.totalLessons ?? 0),
+        duration: String(maybe.duration ?? ""),
+        description: String(maybe.description ?? ""),
+        willLearn: Array.isArray(maybe.willLearn) ? maybe.willLearn : [],
+        requirements: Array.isArray(maybe.requirements)
+          ? maybe.requirements
+          : [],
+        curriculum: Array.isArray(maybe.curriculum)
+          ? maybe.curriculum.map((m: any) => ({
+              ...m,
+              lessons: Array.isArray(m?.lessons)
+                ? m.lessons.map((l: any) => ({
+                    ...l,
+                    isPreview: normalizeIsPreview(l?.isPreview),
+                    type: l?.type,
+                    content: l?.content,
+                    attachments: l?.attachments,
+                  }))
+                : [],
+            }))
+          : [],
+        tags: Array.isArray(maybe.tags) ? maybe.tags : [],
+        price: Number(maybe.price ?? 0),
+        lastUpdated: String(maybe.lastUpdated ?? ""),
+      };
+    }
+
+    return mapBackendCourseToFrontend(data.course as BackendCourseDetail);
+  },
+
+  async getMyCourses(): Promise<BackendCourseListItem[]> {
+    const data = await apiRequest<{ courses: BackendCourseListItem[] }>("teacher/courses", {
+      method: "GET",
+    });
+    return data.courses || [];
+  },
+
+  async getEnrolledCourses(): Promise<BackendCourseListItem[]> {
+    const data = await apiRequest<{ courses: BackendCourseListItem[] }>("student/enrollments", {
+      method: "GET",
+    });
+    return data.courses || [];
+  },
+};

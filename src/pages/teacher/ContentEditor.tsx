@@ -1,0 +1,2005 @@
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import {
+    Plus, Trash2, Edit3, GripVertical,
+    Video, ChevronDown,
+    Save, ArrowLeft, Layout,
+    FileText, Image as ImageIcon, Link as LinkIcon,
+    File as FileIcon, X, Eye, EyeOff,
+    LoaderCircle, Music, Zap, CheckCircle2, Loader2, Calendar, Trophy
+} from 'lucide-react';
+import { type CurriculumModule, type Lesson, type LessonAttachment } from '../../config/mock-data';
+import toast from 'react-hot-toast';
+import { teacherService, type BackendTeacherChapter, type BackendTeacherLecture } from '../../services/teacher.service';
+import QuizQuestionEditor from './QuizQuestionEditor';
+import ReactQuill from 'react-quill-new';
+import 'quill/dist/quill.snow.css';
+
+const ContentEditor: React.FC = () => {
+    const { id } = useParams<{ id: string }>();
+    const navigate = useNavigate();
+    const [courseTitle, setCourseTitle] = useState<string>('');
+    const [courseDuration, setCourseDuration] = useState<{
+        durationType?: 'lifetime' | 'fixed' | 'subscription';
+        durationValue?: number;
+        durationUnit?: 'days' | 'months' | 'years';
+        renewalDiscountPercent?: number;
+    } | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [curriculum, setCurriculum] = useState<CurriculumModule[]>([]);
+    const [expandedModules, setExpandedModules] = useState<string[]>([]);
+    const [editingLesson, setEditingLesson] = useState<{ mIdx: number, lIdx: number } | null>(null);
+    const [editingModuleIdx, setEditingModuleIdx] = useState<number | null>(null);
+    const [isUploading, setIsUploading] = useState(false);
+    const [previewLectureUrl, setPreviewLectureUrl] = useState<string | null>(null);
+    const [previewAttachmentUrl, setPreviewAttachmentUrl] = useState<string | null>(null);
+
+    // Create Chapter Modal State
+    const [isChapterModalOpen, setIsChapterModalOpen] = useState(false);
+    const [newChapterTitle, setNewChapterTitle] = useState('');
+    const [isCreatingChapter, setIsCreatingChapter] = useState(false);
+
+    // Auto-detect duration state
+    const [autoDuration, setAutoDuration] = useState(false);
+    const [detectedVideoDuration, setDetectedVideoDuration] = useState<number | null>(null); // Store actual video duration in seconds
+
+    // Quiz Modal State
+    const [quizModalOpen, setQuizModalOpen] = useState(false);
+    const [selectedQuizId, setSelectedQuizId] = useState<string | null>(null);
+    const [quizDetail, setQuizDetail] = useState<any>(null);
+    const [quizLoading, setQuizLoading] = useState(false);
+
+    // Quiz Edit Modal State
+    const [isEditQuizModalOpen, setIsEditQuizModalOpen] = useState(false);
+    const [editTitle, setEditTitle] = useState('');
+    const [editDescription, setEditDescription] = useState('');
+    const [editTimeLimit, setEditTimeLimit] = useState(30);
+    const [editMaxScore, setEditMaxScore] = useState(100);
+    const [editPassingScore, setEditPassingScore] = useState(60);
+    const [editStartTime, setEditStartTime] = useState('');
+    const [editEndTime, setEditEndTime] = useState('');
+    const [editShowResults, setEditShowResults] = useState(true);
+    const [isUpdatingQuiz, setIsUpdatingQuiz] = useState(false);
+    const [isPublishing, setIsPublishing] = useState(false);
+
+    // Final Exam State
+    const [finalExam, setFinalExam] = useState<any>(null);
+    const [createFinalOpen, setCreateFinalOpen] = useState(false);
+    const [createFinalTitle, setCreateFinalTitle] = useState('');
+    const [createFinalTimeLimit, setCreateFinalTimeLimit] = useState(30);
+    const [createFinalMaxScore, setCreateFinalMaxScore] = useState(100);
+    const [createFinalPassingScore, setCreateFinalPassingScore] = useState(60);
+    const [createFinalShowResults, setCreateFinalShowResults] = useState(true);
+    const [creatingFinal, setCreatingFinal] = useState(false);
+    const [finalExamMode, setFinalExamMode] = useState<'manual' | 'ai'>('manual');
+    const [finalChapterCounts, setFinalChapterCounts] = useState<Record<string, number>>({});
+    const [finalAIDifficulty, setFinalAIDifficulty] = useState<'easy' | 'medium' | 'hard' | 'mixed'>('mixed');
+
+    // Giải mã HTML entities (biến &lt; thành <, &gt; thành >, ...) mà không mất thẻ
+    const decodeHTML = (html: string) => {
+        if (!html) return '';
+
+        // Nếu chuỗi chứa các thẻ HTML thực sự (<p>, <ul>, ...), có thể nó đã được giải mã
+        if (/<[a-z][\s\S]*>/i.test(html)) {
+            return html;
+        }
+
+        return html
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&copy;/g, '©')
+            .replace(/&reg;/g, '®');
+    };
+
+    const mapBackendLectureToLesson = (lecture: BackendTeacherLecture): Lesson => {
+        const sec = Number(lecture.duration ?? 0);
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        const duration = sec > 0 ? `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : '00:00';
+
+        return {
+            id: String(lecture.id),
+            title: lecture.title,
+            duration,
+            isPreview: Boolean((lecture as any).isPreview),
+            attachments: Array.isArray((lecture as any).attachments) ? (lecture as any).attachments : [],
+            videoUrl: lecture.contentUrl || '',
+            content: decodeHTML((lecture as any).content || ''),
+            type: lecture.type,
+        } as any;
+    };
+
+    const mapBackendChapterToModule = (chapter: BackendTeacherChapter): CurriculumModule => {
+        const lectures = ((chapter as any).lectures || []).map(mapBackendLectureToLesson);
+        const quizzes = ((chapter as any).quizzes || []).map((quiz: any) => ({
+            id: `quiz-${quiz.id}`,
+            title: quiz.title,
+            duration: `${quiz.timeLimit || 30} phút`,
+            isPreview: false,
+            attachments: [],
+            videoUrl: '',
+            content: quiz.description || '',
+            type: 'quiz',
+            quizId: String(quiz.id),
+            status: quiz.status || 'draft',
+        } as any));
+        return {
+            id: String(chapter.id),
+            title: chapter.title,
+            lessons: [...lectures, ...quizzes],
+        } as any;
+    };
+
+    const parseDurationToSeconds = (duration: string | undefined): number | undefined => {
+        if (!duration) return undefined;
+        const d = String(duration).trim();
+        const m = d.match(/^(\d{1,2}):(\d{1,2})$/);
+        if (m) {
+            const mm = Number(m[1]);
+            const ss = Number(m[2]);
+            if (!Number.isFinite(mm) || !Number.isFinite(ss)) return undefined;
+            return mm * 60 + ss;
+        }
+        const onlyNumber = Number(d);
+        if (Number.isFinite(onlyNumber)) return onlyNumber;
+        return undefined;
+    };
+
+    const guessLectureTypeFromFile = (file: File): string => {
+        const mime = String(file.type || '').toLowerCase();
+        if (mime.startsWith('video/')) return 'video';
+        if (mime.startsWith('audio/')) return 'audio';
+        if (mime === 'application/pdf') return 'pdf';
+        return 'file';
+    };
+
+    const getAcceptForLectureType = (type: string): string | undefined => {
+        const t = String(type || '').toLowerCase();
+        if (t === 'video') return 'video/*';
+        if (t === 'audio') return 'audio/*';
+        if (t === 'pdf') return 'application/pdf';
+        return undefined;
+    };
+
+    const isFileAllowedForLectureType = (file: File, type: string): boolean => {
+        const t = String(type || '').toLowerCase();
+        const mime = String(file.type || '').toLowerCase();
+        if (t === 'video') return mime.startsWith('video/');
+        if (t === 'audio') return mime.startsWith('audio/');
+        if (t === 'pdf') return mime === 'application/pdf';
+        return true;
+    };
+
+    const getAcceptForAttachmentType = (type: LessonAttachment['type']): string | undefined => {
+        if (type === 'pdf') return 'application/pdf';
+        if (type === 'image') return 'image/*';
+        return undefined;
+    };
+
+    useEffect(() => {
+        return () => {
+            if (previewLectureUrl) URL.revokeObjectURL(previewLectureUrl);
+            if (previewAttachmentUrl) URL.revokeObjectURL(previewAttachmentUrl);
+        };
+    }, [previewLectureUrl, previewAttachmentUrl]);
+
+    useEffect(() => {
+        const load = async () => {
+            if (!id) return;
+            try {
+                setIsLoading(true);
+                const data = await teacherService.getCourseContent(String(id));
+                const course = (data as any)?.course;
+                setCourseTitle(String(course?.title || ''));
+                setCourseDuration({
+                    durationType: course?.durationType,
+                    durationValue: course?.durationValue,
+                    durationUnit: course?.durationUnit,
+                    renewalDiscountPercent: course?.renewalDiscountPercent,
+                });
+                const modules = (data.chapters || []).map(mapBackendChapterToModule);
+                setCurriculum(modules);
+                setExpandedModules(modules.map((m) => m.id));
+                // Fetch final exam for this course
+                try {
+                    const quizzes = await teacherService.getCourseQuizzes(String(id));
+                    const existingFinal = quizzes.find((q: any) => q.type === 'final');
+                    setFinalExam(existingFinal || null);
+                } catch {
+                    setFinalExam(null);
+                }
+            } catch (e) {
+                toast.error(e instanceof Error ? e.message : 'Không thể tải nội dung khóa học');
+                navigate('/teacher/dashboard');
+            } finally {
+                setTimeout(() => {
+                    setIsLoading(false)
+                }, 1000)
+            }
+        };
+
+        load();
+    }, [id]);
+
+    const toggleModule = (moduleId: string) => {
+        setExpandedModules(prev =>
+            prev.includes(moduleId)
+                ? prev.filter(id => id !== moduleId)
+                : [...prev, moduleId]
+        );
+    };
+
+    const addModule = () => {
+        setNewChapterTitle(`Chương ${curriculum.length + 1}: `);
+        setIsChapterModalOpen(true);
+    };
+
+    const confirmAddModule = async () => {
+        if (!id || !newChapterTitle.trim()) {
+            toast.error('Vui lòng nhập tiêu đề chương');
+            return;
+        }
+
+        setIsCreatingChapter(true);
+        try {
+            const chapter = await teacherService.createChapter({
+                courseId: String(id),
+                title: newChapterTitle.trim(),
+                order: curriculum.length,
+            });
+            const newModule = mapBackendChapterToModule({ ...chapter, Lectures: [] });
+            setCurriculum((prev) => [...prev, newModule]);
+            setExpandedModules((prev) => [...prev, newModule.id]);
+            setEditingModuleIdx(curriculum.length);
+            setEditingLesson(null);
+            setIsChapterModalOpen(false);
+            setNewChapterTitle('');
+            toast.success('Đã tạo chương mới');
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Tạo chương thất bại');
+        } finally {
+            setIsCreatingChapter(false);
+        }
+    };
+
+    const addLesson = (mIdx: number, type: string = 'video') => {
+        const run = async () => {
+            const module = curriculum[mIdx];
+            if (!module) return;
+
+            try {
+                const lecture = await teacherService.createLecture({
+                    chapterId: String(module.id),
+                    title: type === 'text' ? 'Bài học văn bản mới' : 'Bài học mới',
+                    type: type,
+                    duration: parseDurationToSeconds('05:00'),
+                    order: module.lessons.length,
+                });
+
+                const newLesson = mapBackendLectureToLesson(lecture);
+                setCurriculum((prev) => {
+                    const next = [...prev];
+                    next[mIdx] = { ...next[mIdx], lessons: [...next[mIdx].lessons, newLesson] } as any;
+                    return next;
+                });
+
+                setEditingLesson({ mIdx, lIdx: module.lessons.length });
+                setEditingModuleIdx(null);
+                setAutoDuration(false); // Reset auto duration for new lesson
+                setDetectedVideoDuration(null); // Reset detected video duration
+                toast.success(`Đã thêm bài học ${type.toUpperCase()}`);
+            } catch (e) {
+                toast.error(e instanceof Error ? e.message : 'Tạo bài giảng thất bại');
+            }
+        };
+
+        run();
+    };
+
+    const handleSave = () => {
+        const run = async () => {
+            try {
+                await Promise.all(
+                    curriculum.map((module, mIdx) =>
+                        teacherService.updateChapter({
+                            chapterId: String(module.id),
+                            title: module.title,
+                            order: mIdx,
+                        }),
+                    ),
+                );
+
+                const lectureUpdates: Promise<unknown>[] = [];
+                for (let mIdx = 0; mIdx < curriculum.length; mIdx += 1) {
+                    const module = curriculum[mIdx];
+                    for (let lIdx = 0; lIdx < (module.lessons || []).length; lIdx += 1) {
+                        const lesson = module.lessons[lIdx];
+                        // Skip quiz lessons - they are not lectures
+                        if ((lesson as any).type === 'quiz') continue;
+                        lectureUpdates.push(
+                            teacherService.updateLecture({
+                                lectureId: String((lesson as any).id),
+                                title: lesson.title,
+                                type: String((lesson as any).type || 'video'),
+                                contentUrl: (lesson as any).videoUrl || undefined,
+                                content: (lesson as any).content || undefined,
+                                duration: parseDurationToSeconds(lesson.duration),
+                                isPreview: Boolean((lesson as any).isPreview),
+                                attachments: Array.isArray((lesson as any).attachments) ? (lesson as any).attachments : [],
+                                order: lIdx,
+                            }),
+                        );
+                    }
+                }
+
+                await Promise.all(lectureUpdates);
+                toast.success('Lưu nội dung bài giảng thành công!');
+                navigate('/teacher/courses');
+            } catch (e) {
+                toast.error(e instanceof Error ? e.message : 'Lưu nội dung thất bại');
+            }
+        };
+
+        run();
+    };
+
+    const currentLesson = editingLesson ? curriculum[editingLesson.mIdx].lessons[editingLesson.lIdx] : null;
+    const currentModule = editingModuleIdx !== null ? curriculum[editingModuleIdx] : null;
+
+    const updateCurrentLesson = (updates: Partial<Lesson>) => {
+        if (!editingLesson) return;
+        const newCurriculum = [...curriculum];
+        newCurriculum[editingLesson.mIdx].lessons[editingLesson.lIdx] = {
+            ...newCurriculum[editingLesson.mIdx].lessons[editingLesson.lIdx],
+            ...updates
+        };
+        // Reset preview if we are switching lessons or completing update
+        if (updates.videoUrl) {
+            if (previewLectureUrl) URL.revokeObjectURL(previewLectureUrl);
+            setPreviewLectureUrl(null);
+        }
+        setCurriculum(newCurriculum);
+    };
+
+    const updateCurrentModule = (updates: Partial<CurriculumModule>) => {
+        if (editingModuleIdx === null) return;
+        const newCurriculum = [...curriculum];
+        newCurriculum[editingModuleIdx] = {
+            ...newCurriculum[editingModuleIdx],
+            ...updates
+        };
+        setCurriculum(newCurriculum);
+    };
+
+    const detectDurationFromFile = (file: File): Promise<number> => {
+        return new Promise((resolve) => {
+            const type = file.type.toLowerCase();
+            console.log('[Duration] File type:', type);
+            
+            if (!type.startsWith('video/') && !type.startsWith('audio/')) {
+                console.log('[Duration] Not video/audio, skipping');
+                resolve(0);
+                return;
+            }
+
+            const media = type.startsWith('video/') ? document.createElement('video') : document.createElement('audio');
+            const url = URL.createObjectURL(file);
+            
+            media.onloadedmetadata = () => {
+                console.log('[Duration] Detected:', media.duration, 'seconds');
+                URL.revokeObjectURL(url);
+                resolve(Math.round(media.duration));
+            };
+            
+            media.onerror = (e) => {
+                console.error('[Duration] Error loading media:', e);
+                URL.revokeObjectURL(url);
+                resolve(0);
+            };
+            
+            media.src = url;
+            media.load();
+        });
+    };
+
+    const formatDurationFromSeconds = (seconds: number): string => {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+
+    const uploadLectureFile = async (file: File) => {
+        if (!editingLesson || !currentLesson) return;
+        try {
+            setIsUploading(true);
+            const lectureId = String((currentLesson as any).id);
+            const type = String((currentLesson as any).type || guessLectureTypeFromFile(file));
+
+            // Auto-detect duration for video/audio
+            const durationSeconds = await detectDurationFromFile(file);
+            
+            // Local preview
+            const url = URL.createObjectURL(file);
+            if (previewLectureUrl) URL.revokeObjectURL(previewLectureUrl);
+            setPreviewLectureUrl(url);
+
+            const updated = await teacherService.updateLecture({
+                lectureId,
+                file,
+                type,
+            });
+
+            const updates: any = {
+                videoUrl: updated.contentUrl || '',
+                type: updated.type,
+            };
+            
+            // Auto-update duration if detected
+            if (durationSeconds > 0) {
+                updates.duration = formatDurationFromSeconds(durationSeconds);
+                setAutoDuration(true);
+                setDetectedVideoDuration(durationSeconds); // Store detected duration
+                toast.success(`Upload thành công! Thời lượng: ${formatDurationFromSeconds(durationSeconds)}`);
+            } else {
+                toast.success('Upload file thành công');
+            }
+
+            updateCurrentLesson(updates);
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Upload file thất bại');
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
+    const getYouTubeEmbedUrl = (url: string): string | null => {
+        const u = String(url || '').trim();
+        if (!u) return null;
+        try {
+            const parsed = new URL(u);
+            const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+            if (host === 'youtu.be') {
+                const id = parsed.pathname.split('/').filter(Boolean)[0];
+                return id ? `https://www.youtube.com/embed/${id}` : null;
+            }
+            if (host === 'youtube.com' || host === 'm.youtube.com') {
+                const id = parsed.searchParams.get('v');
+                if (id) return `https://www.youtube.com/embed/${id}`;
+                const parts = parsed.pathname.split('/').filter(Boolean);
+                const idx = parts.findIndex((p) => p === 'embed');
+                if (idx >= 0 && parts[idx + 1]) return `https://www.youtube.com/embed/${parts[idx + 1]}`;
+            }
+        } catch {
+        }
+        return null;
+    };
+
+    const addAttachment = (type: LessonAttachment['type']) => {
+        if (!editingLesson || !currentLesson) return;
+        const newAttachment: LessonAttachment = {
+            id: `at${Date.now()}`,
+            type,
+            title: `Tài liệu ${type.toUpperCase()}`,
+            url: ''
+        };
+        updateCurrentLesson({
+            attachments: [...(currentLesson.attachments || []), newAttachment]
+        });
+    };
+
+    const updateAttachment = (atIdx: number, updates: Partial<LessonAttachment>) => {
+        if (!editingLesson || !currentLesson) return;
+        const newAttachments = [...(currentLesson.attachments || [])];
+        newAttachments[atIdx] = { ...newAttachments[atIdx], ...updates };
+        updateCurrentLesson({ attachments: newAttachments });
+    };
+
+    const removeAttachment = (atIdx: number) => {
+        if (!editingLesson || !currentLesson) return;
+        const newAttachments = [...(currentLesson.attachments || [])];
+        newAttachments.splice(atIdx, 1);
+        updateCurrentLesson({ attachments: newAttachments });
+    };
+
+    const uploadAttachmentFile = async (atIdx: number, file: File) => {
+        if (!editingLesson || !currentLesson) return;
+        const item = currentLesson.attachments?.[atIdx];
+        if (!item) return;
+
+        const mime = String(file.type || '').toLowerCase();
+        if (item.type === 'pdf' && mime !== 'application/pdf') {
+            toast.error('Vui lòng chọn đúng file PDF');
+            return;
+        }
+        if (item.type === 'image' && !mime.startsWith('image/')) {
+            toast.error('Vui lòng chọn đúng file hình ảnh');
+            return;
+        }
+        if (item.type === 'link') {
+            toast.error('Tài liệu dạng link không upload file');
+            return;
+        }
+
+        try {
+            setIsUploading(true);
+
+            // Local preview
+            const url = URL.createObjectURL(file);
+            if (previewAttachmentUrl) URL.revokeObjectURL(previewAttachmentUrl);
+            setPreviewAttachmentUrl(url);
+
+            const res = await teacherService.uploadAttachmentMedia(file);
+
+            // Build updated attachments array and persist to DB immediately
+            const newAttachments = [...(currentLesson.attachments || [])];
+            newAttachments[atIdx] = { ...newAttachments[atIdx], url: res.url };
+            await teacherService.updateLecture({
+                lectureId: String((currentLesson as any).id),
+                attachments: newAttachments,
+            });
+
+            updateAttachment(atIdx, { url: res.url });
+            toast.success('Upload tài liệu thành công');
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Upload tài liệu thất bại');
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
+    // Quiz editing functions
+    const loadQuizDetail = async (quizId: string) => {
+        try {
+            setQuizLoading(true);
+            const detail = await teacherService.getQuiz(quizId);
+            setQuizDetail(detail);
+        } catch (err: any) {
+            toast.error(err?.message || 'Không thể tải chi tiết quiz');
+        } finally {
+            setQuizLoading(false);
+        }
+    };
+
+    const openEditQuiz = () => {
+        if (!quizDetail) return;
+        setEditTitle(quizDetail.title || '');
+        setEditDescription(quizDetail.description || '');
+        setEditTimeLimit(quizDetail.timeLimit || 30);
+        setEditMaxScore(quizDetail.maxScore || 100);
+        setEditPassingScore(quizDetail.passingScore || 60);
+        setEditStartTime(quizDetail.startTime ? new Date(quizDetail.startTime).toLocaleString('sv-SE').replace(' ', 'T').slice(0, 16) : '');
+        setEditEndTime(quizDetail.endTime ? new Date(quizDetail.endTime).toLocaleString('sv-SE').replace(' ', 'T').slice(0, 16) : '');
+        setEditShowResults(quizDetail.showResults ?? true);
+        setIsEditQuizModalOpen(true);
+    };
+
+    const submitUpdateQuiz = async () => {
+        if (!selectedQuizId) return;
+        try {
+            setIsUpdatingQuiz(true);
+            await teacherService.updateQuiz(String(selectedQuizId), {
+                title: editTitle,
+                description: editDescription,
+                timeLimit: editTimeLimit,
+                maxScore: editMaxScore,
+                passingScore: editPassingScore,
+                startTime: editStartTime || null,
+                endTime: editEndTime || null,
+                showResults: editShowResults,
+            });
+            toast.success('Cập nhật thông tin bài thi thành công');
+            setIsEditQuizModalOpen(false);
+            await loadQuizDetail(String(selectedQuizId));
+        } catch (err: any) {
+            toast.error(err?.message || 'Không thể cập nhật thông tin');
+        } finally {
+            setIsUpdatingQuiz(false);
+        }
+    };
+
+    const handleCreateFinalExamAI = async () => {
+        if (!id || !createFinalTitle.trim()) {
+            toast.error('Vui lòng nhập tiêu đề bài thi');
+            return;
+        }
+        const chaptersWithCount = curriculum.filter(m => (finalChapterCounts[String(m.id)] || 0) > 0);
+        if (chaptersWithCount.length === 0) {
+            toast.error('Vui lòng chỉ định ít nhất 1 câu hỏi cho một chương');
+            return;
+        }
+        try {
+            setCreatingFinal(true);
+
+            // Step 1: Generate questions per chapter (no save)
+            const generationResults = await Promise.all(
+                chaptersWithCount.map(chapter =>
+                    teacherService.generateRAGQuiz(String(id), {
+                        scope: 'chapter',
+                        chapterId: chapter.id,
+                        count: finalChapterCounts[String(chapter.id)],
+                        difficulty: finalAIDifficulty,
+                        questionTypes: ['multiple_choice', 'true_false'],
+                    })
+                )
+            );
+
+            // Step 2: Flatten all generated questions
+            const allQuestions = generationResults.flatMap(r => r.questions);
+
+            if (allQuestions.length === 0) {
+                toast.error('AI không tạo được câu hỏi. Hãy đảm bảo nội dung bài giảng đã được nạp vào hệ thống.');
+                return;
+            }
+
+            // Step 3: Create one final exam quiz
+            const quiz = await teacherService.createQuiz(String(id), {
+                title: createFinalTitle.trim(),
+                timeLimit: createFinalTimeLimit,
+                maxScore: createFinalMaxScore,
+                passingScore: createFinalPassingScore,
+                showResults: createFinalShowResults,
+                type: 'final',
+            });
+
+            // Step 4: Add all questions to the quiz
+            await Promise.all(
+                allQuestions.map(q =>
+                    teacherService.addQuestion(quiz.id, {
+                        type: q.type as any,
+                        content: (q as any).question || (q as any).content || '',
+                        options: q.options,
+                        correctAnswer: q.correctAnswer,
+                        explanation: (q as any).explanation,
+                        points: q.points || 1,
+                    })
+                )
+            );
+
+            toast.success(`Đã tạo bài thi cuối kỳ với ${allQuestions.length} câu hỏi bằng AI`);
+            setCreateFinalOpen(false);
+            setFinalExam(quiz);
+            navigate(`/teacher/quiz-editor/${quiz.id}`);
+        } catch (err: any) {
+            toast.error(err?.message || 'Không thể tạo bài thi bằng AI');
+        } finally {
+            setCreatingFinal(false);
+        }
+    };
+
+    const handleCreateFinalExam = async () => {
+        if (!id || !createFinalTitle.trim()) {
+            toast.error('Vui lòng nhập tiêu đề bài thi');
+            return;
+        }
+        try {
+            setCreatingFinal(true);
+            const result = await teacherService.createQuiz(String(id), {
+                title: createFinalTitle.trim(),
+                description: '',
+                timeLimit: createFinalTimeLimit,
+                maxScore: createFinalMaxScore,
+                passingScore: createFinalPassingScore,
+                showResults: createFinalShowResults,
+                type: 'final',
+            });
+            toast.success('Tạo bài thi cuối kỳ thành công');
+            setCreateFinalOpen(false);
+            setFinalExam(result);
+            // Navigate to quiz editor to add questions
+            navigate(`/teacher/quiz-editor/${result.id}`);
+        } catch (err: any) {
+            toast.error(err?.message || 'Không thể tạo bài thi cuối kỳ');
+        } finally {
+            setCreatingFinal(false);
+        }
+    };
+
+    const handlePublishQuiz = async () => {
+        if (!selectedQuizId) return;
+        try {
+            setIsPublishing(true);
+            await teacherService.publishAIQuiz(String(selectedQuizId));
+            toast.success('Đã publish quiz thành công!');
+            await loadQuizDetail(String(selectedQuizId));
+        } catch (err: any) {
+            toast.error(err?.message || 'Không thể publish quiz');
+        } finally {
+            setIsPublishing(false);
+        }
+    };
+
+    // Load quiz detail when drawer opens
+    useEffect(() => {
+        if (quizModalOpen && selectedQuizId) {
+            loadQuizDetail(selectedQuizId);
+        }
+    }, [quizModalOpen, selectedQuizId]);
+
+    // Auto-init per-chapter question counts when final exam AI modal opens
+    useEffect(() => {
+        if (createFinalOpen && finalExamMode === 'ai' && curriculum.length > 0) {
+            setFinalChapterCounts(prev => {
+                const hasAny = Object.keys(prev).length > 0;
+                if (hasAny) return prev;
+                const perChapter = Math.max(1, Math.round(15 / curriculum.length));
+                const init: Record<string, number> = {};
+                curriculum.forEach((m) => { init[String(m.id)] = perChapter; });
+                return init;
+            });
+        }
+        if (!createFinalOpen) {
+            setFinalChapterCounts({});
+        }
+    }, [createFinalOpen, finalExamMode, curriculum]);
+
+    // Auto-suggest end time based on start time and duration
+    useEffect(() => {
+        if (editStartTime && editTimeLimit) {
+            try {
+                const startDate = new Date(editStartTime);
+                if (!isNaN(startDate.getTime())) {
+                    const endDate = new Date(startDate.getTime() + editTimeLimit * 60000);
+                    const year = endDate.getFullYear();
+                    const month = String(endDate.getMonth() + 1).padStart(2, '0');
+                    const day = String(endDate.getDate()).padStart(2, '0');
+                    const hours = String(endDate.getHours()).padStart(2, '0');
+                    const mins = String(endDate.getMinutes()).padStart(2, '0');
+                    setEditEndTime(`${year}-${month}-${day}T${hours}:${mins}`);
+                }
+            } catch (err) {
+                console.error('Error calculating end time', err);
+            }
+        }
+    }, [editStartTime, editTimeLimit]);
+
+    return (
+        <div className="w-full pb-20">
+            <div className="max-w-7xl mx-auto">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10 px-4 lg:px-0">
+                    <div>
+                        <button
+                            onClick={() => navigate('/teacher/courses')}
+                            className="group flex items-center gap-3 text-gray-400 hover:text-amber-600 font-black uppercase tracking-widest text-[10px] transition-all cursor-pointer mb-4"
+                        >
+                            <div className="p-2 bg-white rounded-xl shadow-sm group-hover:bg-amber-50 transition-all">
+                                <ArrowLeft size={14} />
+                            </div>
+                            Quay lại
+                        </button>
+                        <h1 className="md:text-3xl text-xl font-bold text-gray-900 flex items-center gap-3">
+                            Xây dựngchương trình học.
+                        </h1>
+                        {courseTitle && (
+                            <div className="flex items-center gap-3 mt-2">
+                                <p className="md:text-xs text-[10px] font-bold text-gray-400 uppercase tracking-widest">{courseTitle}</p>
+                                {courseDuration && (
+                                    <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${
+                                        courseDuration.durationType === 'lifetime' 
+                                            ? 'bg-emerald-50 text-emerald-600' 
+                                            : 'bg-amber-50 text-amber-600'
+                                    }`}>
+                                        {courseDuration.durationType === 'lifetime' 
+                                            ? 'Vĩnh viễn' 
+                                            : `${courseDuration.durationValue} ${courseDuration.durationUnit === 'months' ? 'tháng' : courseDuration.durationUnit === 'years' ? 'năm' : 'ngày'}`
+                                        }
+                                    </span>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                        <button
+                            onClick={() => navigate('/teacher/courses')}
+                            className="px-6 py-3 text-sm font-bold text-gray-400 hover:text-gray-600"
+                        >
+                            Hủy
+                        </button>
+                        <button
+                            onClick={handleSave}
+                            className="flex items-center gap-3 bg-gray-900 text-white px-10 py-4 rounded-2xl font-bold md:text-sm text-[10px] uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl shadow-gray-200 active:scale-95 cursor-pointer"
+                        >
+                            <Save size={20} />
+                            Xác nhận lưu
+                        </button>
+                    </div>
+                </div>
+
+                {isLoading ? (
+                    <div className="px-4 lg:px-0">
+                        <div className="flex flex-col items-center justify-center bg-white rounded-[40px] border border-gray-100 shadow-sm p-10 text-center">
+                            <LoaderCircle size={40} className="text-amber-600 animate-spin" />
+                        </div>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start md:px-4 lg:px-0">
+                        {/* Module List (Left Column) */}
+                        <div className="lg:col-span-12 xl:col-span-7 space-y-6">
+                            {/* Final Exam Card */}
+                            {finalExam ? (
+                                <div className="bg-gradient-to-br from-red-50 to-orange-50 border border-red-100 rounded-[32px] p-6 lg:p-8 shadow-sm hover:shadow-lg transition-all cursor-pointer group"
+                                    onClick={() => {
+                                        setSelectedQuizId(String(finalExam.id));
+                                        setQuizModalOpen(true);
+                                    }}
+                                >
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-5">
+                                            <div className="w-14 h-14 bg-red-100 text-red-500 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                                                <Trophy size={28} />
+                                            </div>
+                                            <div>
+                                                <h3 className="text-lg font-bold text-gray-900 group-hover:text-red-600 transition-colors">{finalExam.title}</h3>
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <span className="text-[10px] font-black text-red-500 uppercase tracking-widest px-2 py-0.5 bg-red-100 rounded">Bài thi cuối kỳ</span>
+                                                    <span className="text-[10px] font-bold text-gray-400">{finalExam.timeLimit || 30} phút · Đạt {finalExam.passingScore || 60}%</span>
+                                                    <span className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-widest ${finalExam.status === 'published' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                                                        {finalExam.status === 'published' ? 'Công khai' : 'Bản nháp'}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="p-3 text-gray-300 group-hover:text-red-500 transition-colors">
+                                            <ChevronDown size={20} className="-rotate-90" />
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={() => {
+                                        setCreateFinalTitle('Bài thi cuối kỳ');
+                                        setCreateFinalOpen(true);
+                                    }}
+                                    className="w-full py-6 border-2 border-dashed border-red-200 rounded-[32px] text-red-400 font-bold text-sm uppercase tracking-widest hover:border-red-400 hover:text-red-600 hover:bg-red-50 transition-all flex items-center justify-center gap-3 cursor-pointer"
+                                >
+                                    <Trophy size={20} />
+                                    Thêm bài thi cuối kỳ
+                                </button>
+                            )}
+
+                            {curriculum.length === 0 && (
+                                <div className="bg-white rounded-[40px] border-2 border-dashed border-gray-100 p-20 text-center">
+                                    <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-6 text-gray-300">
+                                        <Layout size={40} />
+                                    </div>
+                                    <h3 className="text-xl font-bold text-gray-400">Chưa có chương học nào</h3>
+                                    <p className="text-gray-400 mt-2 text-sm max-w-xs mx-auto">Bắt đầu bằng cách thêm chương (module) đầu tiên cho khóa học của bạn</p>
+                                </div>
+                            )}
+
+                            {curriculum.map((module, mIdx) => (
+                                <div key={module.id} className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden transition-all hover:shadow-md">
+                                    <div className="p-6 lg:p-8 flex items-center justify-between bg-white border-b border-gray-50">
+                                        <div className="flex items-center gap-6 flex-1 pr-4">
+                                            <div className="p-3 bg-gray-50 text-gray-300 cursor-grab active:cursor-grabbing rounded-2xl">
+                                                <GripVertical size={20} />
+                                            </div>
+                                            <div
+                                                className="flex-1 cursor-pointer"
+                                                onClick={() => {
+                                                    setEditingModuleIdx(mIdx);
+                                                    setEditingLesson(null);
+                                                }}
+                                            >
+                                                <div className="flex items-center gap-3 mb-1">
+                                                    <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest px-2 py-0.5 bg-amber-50 rounded-md">Chapter {mIdx + 1}</span>
+                                                    <span className="text-[10px] font-bold text-gray-400">
+                                                        {module.lessons.filter(l => (l as any).type !== 'quiz').length} bài học
+                                                        {module.lessons.some(l => (l as any).type === 'quiz') && (
+                                                            <span className="ml-2 text-purple-500">
+                                                                · {module.lessons.filter(l => (l as any).type === 'quiz').length} quiz
+                                                            </span>
+                                                        )}
+                                                    </span>
+                                                </div>
+                                                <div className="md:text-xl text-md font-bold text-gray-900 group-hover:text-amber-600 transition-colors uppercase tracking-tight">
+                                                    {module.title}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                className={`p-3 cursor-pointer transition-all rounded-2xl ${editingModuleIdx === mIdx ? 'text-amber-500 bg-amber-50' : 'text-gray-300 hover:bg-gray-50'}`}
+                                                onClick={() => {
+                                                    setEditingModuleIdx(mIdx);
+                                                    setEditingLesson(null);
+                                                    setAutoDuration(false); // Reset when switching to module edit
+                                                    setDetectedVideoDuration(null); // Reset detected video duration
+                                                }}
+                                                title="Sửa tiêu đề chương"
+                                            >
+                                                <Edit3 size={20} />
+                                            </button>
+                                            <button
+                                                className="p-3 cursor-pointer text-gray-300 hover:text-red-500 transition-all hover:bg-red-50 rounded-2xl"
+                                                onClick={async () => {
+                                                    if (!confirm('Xóa chương học này và tất cả bài giảng bên trong?')) return;
+                                                    try {
+                                                        await teacherService.deleteChapter(String(module.id));
+                                                        setCurriculum(curriculum.filter(m => m.id !== module.id));
+                                                        setExpandedModules(expandedModules.filter((x) => x !== module.id));
+                                                        setEditingLesson(null);
+                                                        setEditingModuleIdx(null);
+                                                        setAutoDuration(false);
+                                                        setDetectedVideoDuration(null);
+                                                        toast.success('Đã xóa chương');
+                                                    } catch (e) {
+                                                        toast.error(e instanceof Error ? e.message : 'Xóa chương thất bại');
+                                                    }
+                                                }}
+                                                title="Xóa chương này"
+                                            >
+                                                <Trash2 size={20} />
+                                            </button>
+                                            <button
+                                                className={`p-3 cursor-pointer transition-all rounded-2xl ${expandedModules.includes(module.id) ? 'text-amber-500 ' : 'text-gray-300 hover:bg-gray-50'}`}
+                                                onClick={() => toggleModule(module.id)}
+                                            >
+                                                <ChevronDown size={20} className={` transition-transform duration-300 ${expandedModules.includes(module.id) ? 'rotate-180' : ''}`} />
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {expandedModules.includes(module.id) && (
+                                        <div className="p-6 lg:p-8 bg-gray-50/50 space-y-4">
+                                            {module.lessons.map((lesson, lIdx) => (
+                                                <div
+                                                    key={lesson.id}
+                                                    onClick={() => {
+                                                        if ((lesson as any).type === 'quiz') {
+                                                            setSelectedQuizId((lesson as any).quizId);
+                                                            setQuizModalOpen(true);
+                                                        } else {
+                                                            setEditingLesson({ mIdx, lIdx });
+                                                            setEditingModuleIdx(null);
+                                                            setAutoDuration(false); // Reset when switching lessons
+                                                            setDetectedVideoDuration(null); // Reset detected video duration
+                                                        }
+                                                    }}
+                                                    className={`bg-white p-6 rounded-2xl border transition-all cursor-pointer group/lesson flex items-center justify-between ${editingLesson?.mIdx === mIdx && editingLesson?.lIdx === lIdx ? 'border-amber-500 ring-4 ring-amber-500/5 shadow-md' : 'border-gray-100 hover:border-amber-200'}`}
+                                                >
+                                                    <div className="flex items-center gap-5 pr-4 flex-1 min-w-0">
+                                                        <div className={`w-12 h-12 flex items-center justify-center rounded-2xl transition-colors flex-shrink-0 ${editingLesson?.mIdx === mIdx && editingLesson?.lIdx === lIdx ? 'bg-amber-600 text-white' : (lesson as any).type === 'quiz' ? 'bg-indigo-100 text-indigo-600 group-hover/lesson:bg-indigo-600 group-hover/lesson:text-white' : 'bg-gray-50 text-gray-400 group-hover/lesson:bg-amber-50 group-hover/lesson:text-amber-500'}`}>
+                                                            {(lesson as any).type === 'video' ? <Video size={20} /> :
+                                                                (lesson as any).type === 'audio' ? <Music size={20} /> :
+                                                                    (lesson as any).type === 'text' ? <FileText size={20} /> :
+                                                                        (lesson as any).type === 'quiz' ? <Layout size={20} /> :
+                                                                            (lesson as any).type === 'pdf' ? <FileText size={20} className="text-red-500" /> :
+                                                                                <FileIcon size={20} />}
+                                                        </div>
+                                                        <div className="flex-1 min-w-0 overflow-hidden">
+                                                            <h4 className="font-bold text-gray-900 group-hover/lesson:text-amber-600 transition-colors truncate w-full block">{lesson.title}</h4>
+                                                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                                                <span className="text-[10px] font-black text-gray-400 uppercase whitespace-nowrap">{lesson.duration}</span>
+                                                                {lesson.isPreview && <span className="text-[10px] font-black text-emerald-500 px-1.5 py-0.5 bg-emerald-50 rounded uppercase">Xem trước</span>}
+                                                                {(lesson as any).type === 'quiz' && (lesson as any).status === 'draft' && (
+                                                                    <span className="text-[10px] font-black text-gray-500 px-1.5 py-0.5 bg-gray-100 rounded uppercase">Bản nháp</span>
+                                                                )}
+                                                                {lesson.attachments && lesson.attachments.length > 0 && (
+                                                                    <span className="text-[10px] font-bold text-blue-500 flex items-center gap-1">
+                                                                        <FileIcon size={10} /> {lesson.attachments.length} tài liệu
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                                        {(lesson as any).type !== 'quiz' && (
+                                                            <>
+                                                                <button
+                                                                    className="p-2 cursor-pointer text-gray-300 hover:text-purple-500 transition-colors opacity-0 group-hover/lesson:opacity-100 flex-shrink-0"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        const run = async () => {
+                                                                            try {
+                                                                                toast.loading('Đang ingest lecture cho AI...', { id: 'ingest' });
+                                                                                const result = await teacherService.ingestLecture(lesson.id);
+                                                                                toast.dismiss('ingest');
+                                                                                if (result.status === 'skipped') {
+                                                                                    toast.success('Lecture đã được ingest trước đó');
+                                                                                } else {
+                                                                                    toast.success(`Đã ingest thành công: ${result.chunks} chunks`);
+                                                                                }
+                                                                            } catch (err) {
+                                                                                toast.dismiss('ingest');
+                                                                                toast.error(err instanceof Error ? err.message : 'Ingest thất bại');
+                                                                            }
+                                                                        };
+
+                                                                        run();
+                                                                    }}
+                                                                    title="Ingest AI"
+                                                                >
+                                                                    <Zap size={16} />
+                                                                </button>
+                                                                <button
+                                                                    className="p-2 cursor-pointer text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover/lesson:opacity-100 flex-shrink-0"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        const run = async () => {
+                                                                            try {
+                                                                                await teacherService.deleteLecture(String(lesson.id));
+                                                                                const newCurr = [...curriculum];
+                                                                                newCurr[mIdx].lessons = newCurr[mIdx].lessons.filter(l => l.id !== lesson.id);
+                                                                                setCurriculum(newCurr);
+                                                                                if (editingLesson?.mIdx === mIdx && editingLesson?.lIdx === lIdx) setEditingLesson(null);
+                                                                                toast.success('Đã xóa bài giảng');
+                                                                            } catch (err) {
+                                                                                toast.error(err instanceof Error ? err.message : 'Xóa bài giảng thất bại');
+                                                                            }
+                                                                        };
+
+                                                                        run();
+                                                                    }}
+                                                                >
+                                                                    <Trash2 size={16} />
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                        <div className="p-2 cursor-pointer text-gray-300">
+                                                            <ChevronDown size={14} className="-rotate-90" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+
+                                            <div className="flex gap-2 mt-4">
+                                                <button
+                                                    onClick={() => addLesson(mIdx, 'video')}
+                                                    className="flex-1 py-4 border-2 border-dashed border-gray-200 rounded-2xl text-gray-400 font-black text-[10px] uppercase tracking-widest hover:border-blue-300 hover:text-blue-600 hover:bg-white transition-all flex items-center justify-center gap-2"
+                                                >
+                                                    <Video size={16} />
+                                                    + Video
+                                                </button>
+                                                <button
+                                                    onClick={() => navigate(`/teacher/quizzes?courseId=${id}&chapterId=${module.id}`)}
+                                                    className="flex-1 py-4 border-2 border-dashed border-purple-200 rounded-2xl text-purple-500 font-black text-[10px] uppercase tracking-widest hover:border-purple-500 hover:text-white hover:bg-purple-500 transition-all flex items-center justify-center gap-2 shadow-sm hover:shadow-purple-200"
+                                                >
+                                                    <Layout size={16} />
+                                                    + Quiz
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+
+                            <button
+                                onClick={addModule}
+                                className="w-full py-8 border-2 border-dashed border-gray-200 rounded-[40px] text-gray-400 font-bold md:text-lg text-md uppercase tracking-tighter hover:border-amber-400 hover:text-amber-600 hover:bg-white transition-all flex flex-col items-center justify-center gap-3 cursor-pointer shadow-sm hover:shadow-lg"
+                            >
+                                <div className="w-16 h-16 bg-gray-50 rounded-3xl flex items-center justify-center text-gray-300 group-hover:bg-amber-50 group-hover:text-amber-500 transition-colors">
+                                    <Plus size={32} />
+                                </div>
+                                Tạo thêm chương học mới
+                            </button>
+                        </div>
+
+                        {/* Detail Editor (Right Column - Desktop Only) */}
+                        {editingModuleIdx !== null && currentModule ? (
+                            <div className="lg:col-span-12 xl:col-span-5 sticky top-10 space-y-6 animate-in slide-in-from-right-10 duration-500 z-40">
+                                <div className="bg-white rounded-[40px] border border-gray-100 shadow-xl overflow-hidden flex flex-col h-full">
+                                    {/* Editor Header */}
+                                    <div className="p-8 border-b border-gray-50 flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                            <h3 className="text-xl font-bold text-gray-900 tracking-tight">Cài đặt chương học</h3>
+                                        </div>
+                                        <button
+                                            onClick={() => setEditingModuleIdx(null)}
+                                            className="cursor-pointer p-2 text-gray-400 hover:text-gray-900 transition-colors"
+                                        >
+                                            <X size={24} />
+                                        </button>
+                                    </div>
+
+                                    <div className="p-8 space-y-8">
+                                        <div className="space-y-6">
+                                            <div className="space-y-2">
+                                                <label className="text-md font-bold text-gray-400 ml-1">Tiêu đề chương</label>
+                                                <input
+                                                    className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:border-amber-500 font-bold text-gray-900 transition-all uppercase"
+                                                    value={currentModule.title}
+                                                    onChange={e => updateCurrentModule({ title: e.target.value })}
+                                                    placeholder="Nhập tiêu đề chương..."
+                                                />
+                                            </div>
+
+                                            <div className="p-6 bg-blue-50/50 rounded-3xl border border-blue-100/50">
+                                                <div className="flex gap-4">
+
+                                                    <div>
+                                                        <h4 className="text-sm font-bold text-blue-900">Quản lý nội dung chương</h4>
+                                                        <p className="text-xs text-blue-700/70 mt-1 leading-relaxed">
+                                                            Bạn đang chỉnh sửa chương học {editingModuleIdx + 1}. Thay đổi tiêu đề này sẽ được phản ánh trong mục lục khóa học.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="p-8 bg-gray-50 flex items-center justify-between border-t border-gray-100">
+                                        <p className="text-[10px] font-bold text-gray-400 uppercase">Tự động sao lưu dữ liệu</p>
+                                        <button
+                                            onClick={() => setEditingModuleIdx(null)}
+                                            className="bg-slate-900 cursor-pointer text-white px-10 py-5 rounded-2xl font-bold text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl shadow-gray-200"
+                                        >
+                                            HOÀN TẤT & ĐÓNG
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : editingLesson && currentLesson ? (
+                            <div className="fixed inset-0 z-100 flex justify-end bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-300">
+                                <div className="w-full md:w-[600px] lg:w-[800px] h-full bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-500">
+                                    {/* Editor Header */}
+                                    <div className="p-8 border-b border-gray-50 flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-xl flex items-center justify-center">
+                                                <Edit3 size={18} />
+                                            </div>
+                                            <h3 className="text-xl font-bold text-gray-900 tracking-tight">Chi tiết bài học</h3>
+                                        </div>
+                                        <button
+                                            onClick={() => setEditingLesson(null)}
+                                            className="cursor-pointer p-2 text-gray-400 hover:text-gray-900 transition-colors"
+                                        >
+                                            <X size={24} />
+                                        </button>
+                                    </div>
+
+                                    <div className="flex-1 overflow-y-auto p-8 space-y-8 custom-scrollbar">
+                                        {/* Main Fields */}
+                                        <div className="space-y-6">
+                                            <div className="space-y-2">
+                                                <label className="text-md font-bold text-gray-400 ml-1">Tiêu đề bài học</label>
+                                                <input
+                                                    className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:border-amber-500 text-gray-900 transition-all"
+                                                    value={currentLesson.title}
+                                                    onChange={e => updateCurrentLesson({ title: e.target.value })}
+                                                />
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="space-y-2">
+                                                    <div className="flex items-center gap-2">
+                                                        <label className="text-md font-bold text-gray-400 ml-1">Thời lượng</label>
+                                                        {autoDuration && (
+                                                            <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                                                                ⏱️ Auto
+                                                            </span>
+                                                        )}
+                                                        {detectedVideoDuration && (
+                                                            <span className="text-[10px] font-medium text-gray-500">
+                                                                Video thực: {formatDurationFromSeconds(detectedVideoDuration)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {(() => {
+                                                        const raw = String(currentLesson.duration || '00:00');
+                                                        const setDuration = (value: string) => {
+                                                            // Auto-format: convert "130" to "02:10", "5" to "00:05"
+                                                            let formatted = value;
+                                                            if (/^\d+$/.test(value)) {
+                                                                const seconds = Number(value);
+                                                                const m = Math.floor(seconds / 60);
+                                                                const s = seconds % 60;
+                                                                formatted = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+                                                            }
+                                                            // Validate format mm:ss
+                                                            const match = formatted.match(/^(\d{1,3}):(\d{1,2})$/);
+                                                            if (match) {
+                                                                const mm = Math.max(0, Math.min(999, Number(match[1])));
+                                                                const ss = Math.max(0, Math.min(59, Number(match[2])));
+                                                                formatted = `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+                                                            }
+                                                            updateCurrentLesson({ duration: formatted });
+                                                            setAutoDuration(false);
+                                                        };
+
+                                                        // Parse current duration to seconds for comparison
+                                                        const currentDurationSeconds = (() => {
+                                                            const match = raw.match(/^(\d{1,3}):(\d{1,2})$/);
+                                                            if (!match) return 0;
+                                                            return Number(match[1]) * 60 + Number(match[2]);
+                                                        })();
+
+                                                        // Check if manual duration is lower than detected video duration
+                                                        const isDurationLowerThanVideo = detectedVideoDuration && currentDurationSeconds < detectedVideoDuration && !autoDuration;
+
+                                                        const presets = [
+                                                            { label: '5m', value: '05:00' },
+                                                            { label: '10m', value: '10:00' },
+                                                            { label: '15m', value: '15:00' },
+                                                            { label: '30m', value: '30:00' },
+                                                            { label: '1h', value: '60:00' },
+                                                        ];
+
+                                                        return (
+                                                            <div className="space-y-2">
+                                                                <div className="relative">
+                                                                    <input
+                                                                        type="text"
+                                                                        className={`w-full px-4 py-4 bg-gray-50 border rounded-2xl outline-none focus:border-amber-500 text-gray-900 transition-all text-center font-mono ${autoDuration ? 'border-emerald-200 bg-emerald-50/30' : isDurationLowerThanVideo ? 'border-red-300 bg-red-50/30' : 'border-gray-100'}`}
+                                                                        value={raw}
+                                                                        onChange={(e) => setDuration(e.target.value)}
+                                                                        placeholder="mm:ss"
+                                                                    />
+                                                                    {isDurationLowerThanVideo && (
+                                                                        <div className="absolute -bottom-5 left-0 right-0 text-[10px] font-bold text-red-600 text-center">
+                                                                            ⚠️ Thấp hơn video thực tế
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                <div className="flex gap-2 flex-wrap">
+                                                                    {presets.map((preset) => (
+                                                                        <button
+                                                                            key={preset.value}
+                                                                            onClick={() => setDuration(preset.value)}
+                                                                            className="px-3 py-1.5 text-xs font-bold text-gray-600 bg-gray-100 hover:bg-amber-100 hover:text-amber-700 rounded-lg transition-all"
+                                                                        >
+                                                                            {preset.label}
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <label className="text-md font-bold text-gray-400 ml-1">Chế độ xem trước</label>
+                                                    <button
+                                                        onClick={() => updateCurrentLesson({ isPreview: !currentLesson.isPreview })}
+                                                        className={`w-full cursor-pointer py-4 rounded-2xl flex items-center justify-center gap-3 transition-all border ${currentLesson.isPreview ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-gray-50 border-gray-100 text-gray-400'}`}
+                                                    >
+                                                        {currentLesson.isPreview ? <Eye size={18} /> : <EyeOff size={18} />}
+                                                        {currentLesson.isPreview ? 'Công khai' : 'Riêng tư'}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Upload từ máy (Video/Audio/PDF/File)</label>
+                                                <input
+                                                    type="file"
+                                                    accept={getAcceptForLectureType(String((currentLesson as any).type || 'video'))}
+                                                    disabled={isUploading}
+                                                    className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:border-amber-500 font-medium text-sm text-gray-600 transition-all"
+                                                    onChange={(e) => {
+                                                        const file = e.target.files?.[0];
+                                                        if (!file) return;
+                                                        const lectureType = String((currentLesson as any).type || guessLectureTypeFromFile(file));
+                                                        if (!isFileAllowedForLectureType(file, lectureType)) {
+                                                            toast.error(`Vui lòng chọn đúng loại file: ${lectureType.toUpperCase()}`);
+                                                            e.currentTarget.value = '';
+                                                            return;
+                                                        }
+                                                        uploadLectureFile(file);
+                                                        e.currentTarget.value = '';
+                                                    }}
+                                                />
+                                                {isUploading && (
+                                                    <p className="text-[10px] font-bold text-amber-600 uppercase">Đang upload...</p>
+                                                )}
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">URL Video Minh họa (YouTube/MP4)</label>
+                                                <div className="relative">
+                                                    <div className="absolute left-5 top-1/2 -translate-y-1/2 text-gray-300">
+                                                        <Video size={18} />
+                                                    </div>
+                                                    <input
+                                                        className="w-full pl-12 pr-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:border-amber-500 font-medium text-sm text-gray-600 truncate transition-all"
+                                                        value={currentLesson.videoUrl || ''}
+                                                        onChange={e => updateCurrentLesson({ videoUrl: e.target.value })}
+                                                        placeholder="Dán link video tại đây..."
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-3">
+                                                <div className="flex items-center justify-between">
+                                                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Preview</label>
+                                                    {currentLesson.videoUrl ? (
+                                                        <a
+                                                            href={currentLesson.videoUrl}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            className="text-[10px] font-black uppercase tracking-widest text-amber-600 hover:underline"
+                                                        >
+                                                            Mở link
+                                                        </a>
+                                                    ) : null}
+                                                </div>
+
+                                                {(() => {
+                                                    const url = String(previewLectureUrl || currentLesson.videoUrl || '').trim();
+                                                    const type = String((currentLesson as any).type || 'video');
+                                                    if (!url) {
+                                                        return (
+                                                            <div className="p-6 border-2 border-dashed border-gray-100 rounded-[32px] text-center">
+                                                                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-relaxed">
+                                                                    Chưa có nội dung để preview
+                                                                </p>
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    const yt = type === 'video' ? getYouTubeEmbedUrl(url) : null;
+                                                    if (yt) {
+                                                        return (
+                                                            <div className="w-full aspect-video bg-black rounded-2xl overflow-hidden border border-gray-100">
+                                                                <iframe
+                                                                    src={yt}
+                                                                    className="w-full h-full"
+                                                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                                                    allowFullScreen
+                                                                />
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    if (type === 'video') {
+                                                        return (
+                                                            <video
+                                                                src={url}
+                                                                controls
+                                                                className="w-full rounded-2xl border border-gray-100 bg-black"
+                                                            />
+                                                        );
+                                                    }
+
+                                                    if (type === 'audio') {
+                                                        return (
+                                                            <audio
+                                                                src={url}
+                                                                controls
+                                                                className="w-full"
+                                                            />
+                                                        );
+                                                    }
+
+                                                    if (type === 'pdf') {
+                                                        return (
+                                                            <iframe
+                                                                src={url}
+                                                                className="w-full h-[420px] rounded-2xl border border-gray-100 bg-white"
+                                                            />
+                                                        );
+                                                    }
+
+                                                    return (
+                                                        <div className="p-5 bg-gray-50 border border-gray-100 rounded-2xl">
+                                                            <a
+                                                                href={url}
+                                                                target="_blank"
+                                                                rel="noreferrer"
+                                                                className="text-sm font-bold text-amber-600 hover:underline break-all"
+                                                            >
+                                                                {url}
+                                                            </a>
+                                                        </div>
+                                                    );
+                                                })()}
+                                                {previewLectureUrl && !isUploading && (
+                                                    <div className="flex items-center justify-center -mt-2">
+                                                        <span className="bg-amber-500 text-white text-[9px] font-black px-3 py-1 rounded-full uppercase tracking-widest shadow-lg">Local File Preview</span>
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            <div className="space-y-3 pt-4 border-t border-gray-50">
+                                                <div className="flex items-center justify-between ml-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <FileText size={16} className="text-amber-500" />
+                                                        <label className="text-[11px] font-bold text-gray-900 uppercase tracking-widest">Nội dung chi tiết (Văn bản/HTML)</label>
+                                                    </div>
+                                                    <span className="text-[9px] font-bold text-gray-400 italic">Có thể để trống</span>
+                                                </div>
+                                                <div className="bg-gray-50 border border-gray-100 rounded-3xl overflow-hidden focus-within:ring-4 focus-within:ring-amber-500/5 focus-within:border-amber-500 transition-all">
+                                                    <ReactQuill
+                                                        theme="snow"
+                                                        value={String((currentLesson as any).content || '')}
+                                                        onChange={(val: string) => updateCurrentLesson({ content: val } as any)}
+                                                        className="quill-content-editor-unified"
+                                                        placeholder=""
+                                                    />
+                                                </div>
+                                                <style>{`
+                                                    .quill-content-editor-unified .ql-container {
+                                                        min-height: 250px;
+                                                        max-height: 650px;
+                                                        font-family: inherit;
+                                                        border: none !important;
+                                                        display: flex;
+                                                        flex-direction: column;
+                                                    }
+                                                    .quill-content-editor-unified .ql-editor {
+                                                        flex: 1;
+                                                        overflow-y: auto !important;
+                                                        padding: 2rem !important;
+                                                        font-size: 1rem !important;
+                                                        line-height: 1.7 !important;
+                                                        color: #374151 !important;
+                                                    }
+                                                    /* Custom scrollbar for Quill */
+                                                    .quill-content-editor-unified .ql-editor::-webkit-scrollbar {
+                                                        width: 6px;
+                                                    }
+                                                    .quill-content-editor-unified .ql-editor::-webkit-scrollbar-track {
+                                                        background: #f9fafb;
+                                                    }
+                                                    .quill-content-editor-unified .ql-editor::-webkit-scrollbar-thumb {
+                                                        background: #e5e7eb;
+                                                        border-radius: 10px;
+                                                    }
+                                                    .quill-content-editor-unified .ql-editor::-webkit-scrollbar-thumb:hover {
+                                                        background: #d1d5db;
+                                                    }
+                                                    .quill-content-editor-unified .ql-toolbar {
+                                                        border: none !important;
+                                                        border-bottom: 1px solid #f3f4f6 !important;
+                                                        background: #fff;
+                                                        padding: 0.75rem !important;
+                                                    }
+                                                    .quill-content-editor-unified .ql-editor.ql-blank::before {
+                                                        font-style: normal !important;
+                                                        color: #9ca3af !important;
+                                                        font-size: 0.875rem !important;
+                                                        left: 2rem !important;
+                                                    }
+                                                `}</style>
+                                            </div>
+                                        </div>
+
+                                        {/* Attachments Section */}
+                                        <div className="space-y-6 pt-6 border-t border-gray-50">
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex items-center gap-2">
+                                                    <FileText size={16} className="text-amber-500" />
+                                                    <h4 className="font-bold text-gray-900 text-sm">Tài liệu đính kèm</h4>
+                                                </div>
+                                                <div className="flex gap-1">
+                                                    <button
+                                                        onClick={() => addAttachment('pdf')}
+                                                        className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-all"
+                                                        title="Thêm PDF"
+                                                    >
+                                                        <FileText size={16} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => addAttachment('image')}
+                                                        className="p-2 bg-blue-50 text-blue-500 hover:bg-blue-500 hover:text-white rounded-lg transition-all"
+                                                        title="Thêm Hình ảnh"
+                                                    >
+                                                        <ImageIcon size={16} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => addAttachment('link')}
+                                                        className="p-2 bg-emerald-50 text-emerald-500 hover:bg-emerald-500 hover:text-white rounded-lg transition-all"
+                                                        title="Thêm Link"
+                                                    >
+                                                        <LinkIcon size={16} />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {currentLesson.attachments && currentLesson.attachments.length > 0 ? (
+                                                <div className="space-y-3">
+                                                    {currentLesson.attachments.map((item, idx) => (
+                                                        <div key={item.id} className="p-4 bg-gray-50 border border-gray-100 rounded-2xl space-y-3 group animate-in slide-in-from-top-2 duration-300">
+                                                            <div className="flex items-center justify-between">
+                                                                <div className="p-1.5 bg-white rounded-lg text-gray-400">
+                                                                    {item.type === 'pdf' ? <FileText size={14} className="text-red-500" /> : item.type === 'image' ? <ImageIcon size={14} className="text-blue-500" /> : <LinkIcon size={14} className="text-emerald-500" />}
+                                                                </div>
+                                                                <button
+                                                                    onClick={() => removeAttachment(idx)}
+                                                                    className="p-1.5 cursor-pointer text-gray-300 hover:text-red-500 transition-colors"
+                                                                >
+                                                                    <X size={14} />
+                                                                </button>
+                                                            </div>
+                                                            <input
+                                                                className="w-full px-0 bg-transparent border-none text-xs font-black text-gray-800 outline-none uppercase tracking-wider"
+                                                                placeholder="Tiêu đề tài liệu..."
+                                                                value={item.title}
+                                                                onChange={e => updateAttachment(idx, { title: e.target.value })}
+                                                            />
+                                                            <input
+                                                                className="w-full px-0 bg-transparent border-none text-[10px] text-blue-500 font-medium outline-none underline"
+                                                                placeholder="URL tài liệu (Public link)..."
+                                                                value={item.url}
+                                                                onChange={e => updateAttachment(idx, { url: e.target.value })}
+                                                            />
+
+                                                            {(item.type === 'pdf' || item.type === 'image') && (
+                                                                <div className="pt-1">
+                                                                    <input
+                                                                        type="file"
+                                                                        accept={getAcceptForAttachmentType(item.type)}
+                                                                        disabled={isUploading}
+                                                                        className="w-full px-4 py-3 bg-white border border-gray-100 rounded-xl outline-none focus:border-amber-500 font-medium text-xs text-gray-600 transition-all"
+                                                                        onChange={(e) => {
+                                                                            const f = e.target.files?.[0];
+                                                                            if (!f) return;
+                                                                            uploadAttachmentFile(idx, f);
+                                                                            e.currentTarget.value = '';
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <div className="p-8 border-2 border-dashed border-gray-100 rounded-[32px] text-center">
+                                                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-relaxed">
+                                                        Nhấn các biểu tượng trên để thêm <br /> tài liệu PDF, Hình ảnh hoặc Liên kết
+                                                    </p>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                    </div>
+
+                                    <div className="p-8 bg-gray-50 flex items-center justify-between border-t border-gray-100">
+                                        <div className="flex flex-col">
+                                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Tự động sao lưu</p>
+                                            <p className="text-[9px] text-emerald-500 font-bold mt-0.5">Hệ thống đã sẵn sàng</p>
+                                        </div>
+                                        <button
+                                            onClick={() => setEditingLesson(null)}
+                                            className="bg-slate-900 cursor-pointer text-white px-10 py-5 rounded-2xl font-bold text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl shadow-gray-200 active:scale-95"
+                                        >
+                                            HOÀN TẤT & ĐÓNG
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            /* Empty State for Editor (Right Column) */
+                            <div className="lg:col-span-12 xl:col-span-5 hidden xl:block">
+                                <div className="bg-white rounded-[40px] border-2 border-dashed border-gray-100 p-20 text-center sticky top-10 flex flex-col items-center justify-center min-h-[500px]">
+                                    <div className="w-24 h-24 bg-gray-50 rounded-[32px] flex items-center justify-center mb-6 text-gray-200">
+                                        <Edit3 size={40} />
+                                    </div>
+                                    <h4 className="text-xl font-bold text-gray-300">Sẵn sàng chỉnh sửa</h4>
+                                    <p className="text-gray-300 mt-3 text-sm max-w-[200px] font-bold leading-loose">Chọn một bài học từ danh sách bên trái để bắt đầu thêm chi tiết và tài liệu</p>
+                                    <div className="mt-8 flex gap-2">
+                                        <div className="w-2 h-2 rounded-full bg-gray-100"></div>
+                                        <div className="w-2 h-2 rounded-full bg-gray-100"></div>
+                                        <div className="w-2 h-2 rounded-full bg-gray-100"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Create Chapter Modal */}
+                {isChapterModalOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-300">
+                        <div className="w-full max-w-lg bg-white rounded-[40px] border border-gray-100 shadow-2xl overflow-hidden scale-in-center transition-all duration-300 relative">
+                            <div className="md:p-10 p-2 text-center mt-12">
+                                <h3 className="md:text-3xl text-xl font-bold text-gray-900 tracking-tight leading-tight">Thêm chương học mới</h3>
+                                <p className="text-gray-500 text-xs font-medium mt-2">Dùng tiêu đề rõ ràng để học viên dễ dàng định vị bài học của bạn.</p>
+                            </div>
+
+                            <div className="md:px-10 px-4 pb-10 space-y-6">
+                                <div className="space-y-2">
+                                    <label className="text-[13px] font-bold text-gray-400 ml-1">Tiêu đề chương</label>
+                                    <input
+                                        autoFocus
+                                        className="w-full px-6 py-5 bg-gray-50 border border-gray-100 rounded-3xl outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-500/5 font-bold text-gray-900 md:text-lg transition-all uppercase"
+                                        placeholder="Ví dụ: Giới thiệu chung..."
+                                        value={newChapterTitle}
+                                        onChange={(e) => setNewChapterTitle(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && !isCreatingChapter) confirmAddModule();
+                                        }}
+                                    />
+                                    <p className="text-[10px] text-gray-400 font-medium ml-2 uppercase tracking-wide">* Gợi ý: Hãy đặt tên ngắn gọn và súc tích</p>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <button
+                                        disabled={isCreatingChapter}
+                                        onClick={() => setIsChapterModalOpen(false)}
+                                        className="px-8 py-5 cursor-pointer rounded-3xl font-bold text-gray-400 hover:bg-gray-50 transition-all text-md border border-gray-100 active:scale-95 disabled:opacity-50"
+                                    >
+                                        Hủy bỏ
+                                    </button>
+                                    <button
+                                        disabled={isCreatingChapter || !newChapterTitle.trim()}
+                                        onClick={confirmAddModule}
+                                        className="px-8 py-5 cursor-pointer bg-gray-900 text-white rounded-3xl font-bold text-md hover:bg-amber-600 transition-all shadow-xl shadow-gray-200 flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50"
+                                    >
+                                        {isCreatingChapter ? (
+                                            <>
+                                                <LoaderCircle size={18} className="animate-spin" />
+                                                Đang tạo...
+                                            </>
+                                        ) : 'Xác nhận tạo'}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <button
+                                onClick={() => !isCreatingChapter && setIsChapterModalOpen(false)}
+                                className="absolute cursor-pointer top-8 right-8 text-gray-400 hover:text-gray-900 transition-colors p-2 hover:bg-gray-50 rounded-xl"
+                            >
+                                <X size={24} />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Quiz Editor Modal (Drawer style like lecture editor) */}
+                {quizModalOpen && selectedQuizId && (
+                    <div className="fixed inset-0 z-100 flex justify-end bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-300">
+                        <div className="w-full md:w-[600px] lg:w-[800px] h-full bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-500">
+                            {/* Editor Header */}
+                            <div className="p-8 border-b border-gray-50">
+                                <div className="flex items-center justify-between mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-purple-50 text-purple-600">
+                                            <Layout size={18} />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-xl font-bold text-gray-900 tracking-tight">{quizDetail?.title || 'Chỉnh sửa Quiz'}</h3>
+                                            {quizLoading ? (
+                                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">Đang tải...</span>
+                                            ) : quizDetail && (
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                                                        {quizDetail.questions?.length || 0} câu · {quizDetail.maxScore || 0} điểm · Đạt {quizDetail.passingScore || 0}%
+                                                    </span>
+                                                    <span className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-widest ${quizDetail.status === 'published' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                                                        {quizDetail.status === 'published' ? 'Đã publish' : 'Bản nháp'}
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            setQuizModalOpen(false);
+                                            setSelectedQuizId(null);
+                                            setQuizDetail(null);
+                                        }}
+                                        className="cursor-pointer p-2 text-gray-400 hover:text-gray-900 transition-colors"
+                                    >
+                                        <X size={24} />
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    {quizDetail && (
+                                        <>
+                                            <button
+                                                onClick={openEditQuiz}
+                                                className="flex items-center gap-2 px-3 py-2 bg-amber-50 text-amber-600 rounded-lg text-sm font-bold border border-amber-100 hover:bg-amber-100 transition-all cursor-pointer"
+                                            >
+                                                <Edit3 size={14} />
+                                                Sửa thông tin
+                                            </button>
+                                            {quizDetail.status === 'draft' && (
+                                                <button
+                                                    onClick={handlePublishQuiz}
+                                                    disabled={isPublishing}
+                                                    className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 transition-all cursor-pointer disabled:opacity-50"
+                                                >
+                                                    {isPublishing ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                                                    {isPublishing ? 'Đang publish...' : 'Publish'}
+                                                </button>
+                                            )}
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto">
+                                <QuizQuestionEditor quizId={selectedQuizId} isDrawer={true} />
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Edit Quiz Info Modal */}
+                {isEditQuizModalOpen && quizDetail && (
+                    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+                        <div className="bg-white rounded-[32px] shadow-2xl w-full max-w-lg p-8 animate-in zoom-in-95 duration-200">
+                            <div className="flex items-center justify-between mb-6">
+                                <div>
+                                    <h3 className="text-xl font-bold text-gray-900">Sửa thông tin Quiz</h3>
+                                    <p className="text-sm text-gray-400 mt-1">Cập nhật cài đặt bài kiểm tra</p>
+                                </div>
+                                <button onClick={() => setIsEditQuizModalOpen(false)} className="p-2 text-gray-300 hover:text-gray-600 transition-colors cursor-pointer">
+                                    <X size={20} />
+                                </button>
+                            </div>
+
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Tiêu đề</label>
+                                    <input
+                                        type="text"
+                                        value={editTitle}
+                                        onChange={e => setEditTitle(e.target.value)}
+                                        className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-amber-500 transition-all"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Mô tả</label>
+                                    <textarea
+                                        value={editDescription}
+                                        onChange={e => setEditDescription(e.target.value)}
+                                        rows={2}
+                                        className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm text-gray-700 outline-none focus:border-amber-500 transition-all resize-none"
+                                    />
+                                </div>
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Thời gian (phút)</label>
+                                        <input
+                                            type="number"
+                                            value={editTimeLimit}
+                                            onChange={e => setEditTimeLimit(Number(e.target.value))}
+                                            className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-amber-500 transition-all"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Điểm tối đa</label>
+                                        <input
+                                            type="number"
+                                            value={editMaxScore}
+                                            onChange={e => setEditMaxScore(Number(e.target.value))}
+                                            className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-amber-500 transition-all"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Điểm đạt (%)</label>
+                                        <input
+                                            type="number"
+                                            value={editPassingScore}
+                                            onChange={e => setEditPassingScore(Number(e.target.value))}
+                                            className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-amber-500 transition-all"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block flex items-center gap-1"><Calendar size={12} /> Thời gian bắt đầu</label>
+                                        <input
+                                            type="datetime-local"
+                                            value={editStartTime}
+                                            onChange={e => setEditStartTime(e.target.value)}
+                                            className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-amber-500 transition-all"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block flex items-center gap-1"><Calendar size={12} /> Thời gian kết thúc</label>
+                                        <input
+                                            type="datetime-local"
+                                            value={editEndTime}
+                                            onChange={e => setEditEndTime(e.target.value)}
+                                            className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-amber-500 transition-all"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3 pt-2">
+                                    <input
+                                        type="checkbox"
+                                        id="showResults"
+                                        checked={editShowResults}
+                                        onChange={e => setEditShowResults(e.target.checked)}
+                                        className="w-4 h-4 accent-amber-500"
+                                    />
+                                    <label htmlFor="showResults" className="text-sm font-bold text-gray-700 cursor-pointer">Hiển thị kết quả sau khi làm bài</label>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center justify-end gap-3 mt-8">
+                                <button
+                                    onClick={() => setIsEditQuizModalOpen(false)}
+                                    className="px-6 py-3 text-sm font-bold text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+                                >
+                                    Hủy
+                                </button>
+                                <button
+                                    onClick={submitUpdateQuiz}
+                                    disabled={isUpdatingQuiz}
+                                    className="flex items-center gap-2 bg-gray-900 text-white px-8 py-3 rounded-2xl text-sm font-bold hover:bg-emerald-600 transition-all cursor-pointer disabled:opacity-50"
+                                >
+                                    {isUpdatingQuiz ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                                    {isUpdatingQuiz ? 'Đang lưu...' : 'Lưu thay đổi'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Create Final Exam Modal */}
+                {createFinalOpen && (
+                    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300 p-4">
+                        <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-lg p-8 animate-in zoom-in-95 duration-300">
+                            <div className="flex items-center justify-between mb-6">
+                                <div>
+                                    <h3 className="text-2xl font-bold text-gray-900">Tạo bài thi cuối kỳ</h3>
+                                    <p className="text-sm text-gray-400 mt-1">Bài thi đánh giá toàn bộ kiến thức khóa học</p>
+                                </div>
+                                <button onClick={() => setCreateFinalOpen(false)} className="p-2 text-gray-300 hover:text-gray-600 transition-colors cursor-pointer">
+                                    <X size={20} />
+                                </button>
+                            </div>
+
+                            {/* Mode toggle */}
+                            <div className="flex gap-2 p-1 bg-gray-100 rounded-2xl mb-6">
+                                <button
+                                    onClick={() => setFinalExamMode('manual')}
+                                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
+                                        finalExamMode === 'manual' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                                    }`}
+                                >
+                                    <Edit3 size={15} /> Tạo thủ công
+                                </button>
+                                <button
+                                    onClick={() => setFinalExamMode('ai')}
+                                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
+                                        finalExamMode === 'ai' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                                    }`}
+                                >
+                                    <Zap size={15} /> Tạo bằng AI
+                                </button>
+                            </div>
+
+                            <div className="space-y-5">
+                                <div>
+                                    <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Tiêu đề</label>
+                                    <input
+                                        type="text"
+                                        value={createFinalTitle}
+                                        onChange={e => setCreateFinalTitle(e.target.value)}
+                                        className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-red-500 transition-all"
+                                    />
+                                </div>
+                                <div className="grid grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Thời gian (phút)</label>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            value={createFinalTimeLimit}
+                                            onChange={e => setCreateFinalTimeLimit(Number(e.target.value))}
+                                            className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-red-500 transition-all"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Điểm tối đa</label>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            value={createFinalMaxScore}
+                                            onChange={e => setCreateFinalMaxScore(Number(e.target.value))}
+                                            className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-red-500 transition-all"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-2 block">Điểm đạt (%)</label>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={100}
+                                            value={createFinalPassingScore}
+                                            onChange={e => setCreateFinalPassingScore(Number(e.target.value))}
+                                            className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-bold text-gray-800 outline-none focus:border-red-500 transition-all"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <input
+                                        type="checkbox"
+                                        id="finalShowResults"
+                                        checked={createFinalShowResults}
+                                        onChange={e => setCreateFinalShowResults(e.target.checked)}
+                                        className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                                    />
+                                    <label htmlFor="finalShowResults" className="text-sm font-bold text-gray-600 cursor-pointer">Hiển thị kết quả sau khi nộp bài</label>
+                                </div>
+
+                                {/* AI options */}
+                                {finalExamMode === 'ai' && (
+                                    <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-4">
+                                        <div className="flex items-center justify-between">
+                                            <p className="text-[11px] font-black text-amber-600 uppercase tracking-widest flex items-center gap-1.5">
+                                                <Zap size={12} /> Phân bổ câu hỏi theo chương
+                                            </p>
+                                            <div className="flex items-center gap-2">
+                                                <label className="text-[11px] font-bold text-gray-500 uppercase tracking-widest">Độ khó</label>
+                                                <select
+                                                    value={finalAIDifficulty}
+                                                    onChange={e => setFinalAIDifficulty(e.target.value as any)}
+                                                    className="px-3 py-1.5 bg-white border border-amber-100 rounded-lg text-xs font-bold text-gray-800 outline-none focus:border-amber-400 transition-all"
+                                                >
+                                                    <option value="easy">Dễ</option>
+                                                    <option value="medium">Trung bình</option>
+                                                    <option value="hard">Khó</option>
+                                                    <option value="mixed">Hỗn hợp</option>
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        {curriculum.length === 0 ? (
+                                            <p className="text-xs text-amber-500">Chưa có chương học. Hãy tạo chương trước.</p>
+                                        ) : (
+                                            <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                                                {curriculum.map((m, idx) => (
+                                                    <div key={m.id} className="flex items-center gap-3 bg-white rounded-xl px-3 py-2 border border-amber-100">
+                                                        <span className="text-[10px] font-black text-amber-400 uppercase w-14 flex-shrink-0">Ch.{idx + 1}</span>
+                                                        <span className="flex-1 text-xs font-bold text-gray-700 truncate">{m.title}</span>
+                                                        <input
+                                                            type="number"
+                                                            min={0}
+                                                            max={20}
+                                                            value={finalChapterCounts[String(m.id)] ?? 0}
+                                                            onChange={e => setFinalChapterCounts(prev => ({ ...prev, [String(m.id)]: Math.max(0, Number(e.target.value)) }))}
+                                                            className="w-14 px-2 py-1 text-center bg-amber-50 border border-amber-200 rounded-lg text-sm font-bold text-gray-800 outline-none focus:border-amber-400 transition-all [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                                                        />
+                                                        <span className="text-[10px] text-gray-400 font-bold w-8">câu</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <div className="flex items-center justify-between pt-1 border-t border-amber-100">
+                                            <span className="text-[11px] font-bold text-gray-500">Tổng câu hỏi</span>
+                                            <span className="text-sm font-black text-amber-600">
+                                                {Object.values(finalChapterCounts).reduce((s, v) => s + v, 0)} câu
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex items-center justify-end gap-3 mt-8">
+                                <button
+                                    onClick={() => setCreateFinalOpen(false)}
+                                    disabled={creatingFinal}
+                                    className="px-6 py-3 text-sm font-bold text-gray-400 hover:text-gray-600 transition-colors cursor-pointer disabled:opacity-50"
+                                >
+                                    Hủy
+                                </button>
+                                {finalExamMode === 'ai' ? (
+                                    <button
+                                        onClick={handleCreateFinalExamAI}
+                                        disabled={creatingFinal || !createFinalTitle.trim()}
+                                        className="flex items-center gap-2 bg-amber-500 text-white px-8 py-3 rounded-2xl text-sm font-bold hover:bg-amber-600 transition-all cursor-pointer disabled:opacity-50"
+                                    >
+                                        {creatingFinal ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
+                                        {creatingFinal ? 'Đang tạo bằng AI...' : 'Tạo bằng AI'}
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={handleCreateFinalExam}
+                                        disabled={creatingFinal || !createFinalTitle.trim()}
+                                        className="flex items-center gap-2 bg-gray-900 text-white px-8 py-3 rounded-2xl text-sm font-bold hover:bg-red-600 transition-all cursor-pointer disabled:opacity-50"
+                                    >
+                                        {creatingFinal ? <Loader2 size={16} className="animate-spin" /> : <Trophy size={16} />}
+                                        {creatingFinal ? 'Đang tạo...' : 'Tạo bài thi'}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default ContentEditor;
